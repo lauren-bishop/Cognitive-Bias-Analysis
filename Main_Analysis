@@ -1,0 +1,201 @@
+import pandas as pd
+import numpy as np
+import scipy.stats as stats
+import statsmodels.formula.api as smf
+import matplotlib.pyplot as plt
+
+# 1. LOAD DATA
+file_path = r"C:\Users\Lauren\OneDrive - University College London\Cognitive Bias in Surgery#\Results\Data_with_years.csv"
+df = pd.read_csv(file_path)
+df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+
+def significance_stars(p): return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+
+# Key columns
+bias_cols = [c for c in df if c.startswith('bias_score_') and c != 'bias_score_total']
+surg_cols = [c for c in df if c.startswith('surg_') and c != 'surg_total']
+
+# --- 1. DESCRIPTIVE STATS ---
+print("\n=== PARTICIPANT DETAILS ===")
+print(f"Total participants: {df['ppt_number'].nunique()}")
+print("Bias present counts (0=No, 1=Yes):")
+print(df['bias_present'].value_counts())
+if bias_cols:
+    sums = df[bias_cols].sum()
+    print("Most common bias item:", sums.idxmax(), "with count", sums.max())
+    print("Least common bias item:", sums.idxmin(), "with count", sums.min())
+
+# Realism & other questionnaire metrics
+extra_cols = [
+    'how_realistic_is_the_simulation?',
+    'how_stressed_did_you_feel_during_the_procedure?',
+    'how_confident_did_you_feel_in_your_decision-making_process?'
+]
+for col in extra_cols:
+    if col in df:
+        vals = pd.to_numeric(df[col], errors='coerce')
+        print(f"{col}: mean={vals.mean():.2f}, sd={vals.std():.2f}")
+
+print("\n=== QUESTIONNAIRE METRICS BY BIAS PRESENCE ===")
+for col in extra_cols:
+    if col in df:
+        print(f"\n{col}:")
+        by_group = df.groupby('bias_present')[col].agg(['mean', 'std', 'count'])
+        print(by_group)
+        
+# --- 2. EXPERIENCE VS BIAS PRESENCE ---
+if 'what_is_your_year_of_training_or_how_many_years_since_you_have_qualified_as_a_consultant?' in df:
+    # Parse experience as integer
+    def parse_exp(v):
+        if pd.isnull(v): return np.nan
+        v = str(v).upper()
+        if v.isdigit(): return int(v)
+        if 'ST' in v and v[2:].isdigit(): return int(v[2:])
+        if v == 'SHO': return 3
+        return np.nan
+    df['experience_years'] = df['what_is_your_year_of_training_or_how_many_years_since_you_have_qualified_as_a_consultant?'].apply(parse_exp)
+    temp = df.dropna(subset=['experience_years', 'bias_present'])
+    if len(temp['bias_present'].unique()) == 2:
+        m = smf.logit('bias_present ~ experience_years', data=temp).fit(disp=0)
+        p = m.pvalues['experience_years']
+        print(f"\nExperience (continuous) logistic regression p={p:.4f} {significance_stars(p)}")
+        if p < 0.05:
+            temp.boxplot(column='experience_years', by='bias_present')
+            plt.title('Experience by Bias Presence\np={:.4f} {}'.format(p,significance_stars(p)))
+            plt.suptitle('')
+            plt.xlabel('Bias Present (0=No,1=Yes)')
+            plt.ylabel('Experience Years')
+            plt.show()
+        # Categorical chi2
+        temp['experience_cat'] = pd.cut(temp['experience_years'], [0,3,6,10,50], labels=['junior','mid','senior','consultant'])
+        tab = pd.crosstab(temp['bias_present'], temp['experience_cat'])
+        chi2, p2, *_ = stats.chi2_contingency(tab)
+        print(f"Experience (categorical) chi2 p={p2:.4f} {significance_stars(p2)}")
+        if p2 < 0.05:
+            tab.plot(kind='bar')
+            plt.title(f'Bias Presence by Experience Category\np={p2:.4f} {significance_stars(p2)}')
+            plt.xlabel('Bias Present (0=No,1=Yes)')
+            plt.ylabel('Count')
+            plt.show()
+
+# --- 3. NUMBER OF SURGERIES VS BIAS PRESENCE ---
+if 'approximately_how_many_times_have_you_completed_this_procedure_before?' in df:
+    surgeries = df['approximately_how_many_times_have_you_completed_this_procedure_before?'].replace({'N/A': np.nan, 'NA': np.nan})
+    surgeries = surgeries.astype(str).str.replace(r'\D', '', regex=True)
+    df['num_prev_surgeries'] = pd.to_numeric(surgeries, errors='coerce')
+    temp = df.dropna(subset=['num_prev_surgeries', 'bias_present'])
+    if len(temp['bias_present'].unique()) == 2:
+        m = smf.logit('bias_present ~ num_prev_surgeries', data=temp).fit(disp=0)
+        p = m.pvalues['num_prev_surgeries']
+        print(f"\nNumber of surgeries logistic regression p={p:.4f} {significance_stars(p)}")
+        if p < 0.05:
+            temp.boxplot(column='num_prev_surgeries', by='bias_present')
+            plt.title('Number of Surgeries by Bias Presence\np={:.4f} {significance_stars(p)}')
+            plt.suptitle('')
+            plt.xlabel('Bias Present (0=No,1=Yes)')
+            plt.ylabel('Number of Surgeries')
+            plt.show()
+
+# --- 4. BIAS SCORE ITEMS VS BIAS PRESENCE ---
+print("\n=== INDIVIDUAL BIAS SCORE ITEMS vs BIAS PRESENCE ===")
+for col in bias_cols:
+    tab = pd.crosstab(df['bias_present'], df[col])
+    
+    # Only proceed if table has both bias categories and two item categories
+    if tab.shape == (2,2) and tab.values.sum() > 0:
+        chi2, p, *_ = stats.chi2_contingency(tab)
+        print(f"{col}: chi2={chi2:.2f}, p={p:.4f} {significance_stars(p)}")
+        if p < 0.05:
+            # Rename columns and rows for clarity
+            col_labels = [f'{col}: No', f'{col}: Yes']  # adjust if your data has 0/1
+            tab.columns = col_labels
+            tab.index = ['Bias Resistant', 'Bias Susceptible']
+
+            # Convert counts to percentages per column
+            tab_pct = tab.div(tab.sum(axis=0), axis=1) * 100
+
+            # Plot
+            ax = tab_pct.T.plot(kind='bar', stacked=True, color=['#4CAF50','#F44336'])
+            plt.ylabel('Percentage (%)')
+            plt.xlabel(f'{col}')
+            plt.xticks(rotation=0)
+            plt.legend(title='Bias Status')
+            plt.title(f'Bias Resistance / Susceptibility: {col}\np={p:.4f} {significance_stars(p)}')
+            plt.tight_layout()
+            plt.show()
+
+
+# --- 5. TOTAL BIAS SCORE VS BIAS PRESENCE ---
+if 'bias_score_total' in df:
+    temp = df.dropna(subset=['bias_score_total', 'bias_present'])
+    if len(temp['bias_present'].unique()) == 2:
+        m = smf.logit('bias_present ~ bias_score_total', data=temp).fit(disp=0)
+        p = m.pvalues['bias_score_total']
+        print(f"\nTotal bias score logistic regression p={p:.4f} {significance_stars(p)}")
+        if p < 0.05:
+            temp.boxplot(column='bias_score_total', by='bias_present')
+            plt.title('Total Bias Score by Bias Presence\np={:.4f} {significance_stars(p)}')
+            plt.suptitle('')
+            plt.xlabel('Bias Present (0=No,1=Yes)')
+            plt.ylabel('Total Bias Score')
+            plt.show()
+
+# --- 6. SURG-TLX ITEMS VS BIAS PRESENCE ---
+for col in surg_cols:
+    temp = df.dropna(subset=[col, 'bias_present'])
+    if len(temp['bias_present'].unique()) == 2:
+        m = smf.logit(f'bias_present ~ {col}', data=temp).fit(disp=0)
+        p = m.pvalues[col]
+        print(f"{col}: coef={m.params[col]:.2f}, p={p:.4f} {significance_stars(p)}")
+        if p < 0.05:
+            temp.boxplot(column=col, by='bias_present')
+            plt.title(f"{col} by Bias Presence\np={p:.4f} {significance_stars(p)}")
+            plt.suptitle('')
+            plt.xlabel('Bias Present (0=No,1=Yes)')
+            plt.ylabel(col)
+            plt.show()
+
+# --- 7. SURG-TLX TOTAL VS BIAS SCORE TOTAL (Spearman) ---
+if 'surg_total' in df and 'bias_score_total' in df:
+    temp = df.dropna(subset=['surg_total', 'bias_score_total'])
+    corr, p = stats.spearmanr(temp['surg_total'], temp['bias_score_total'])
+    print(f"\nSpearman: surg_total vs bias_score_total: rho={corr:.2f} p={p:.4f} {significance_stars(p)}")
+    if p < 0.05:
+        plt.scatter(temp['bias_score_total'], temp['surg_total'])
+        plt.title(f'SURG-TLX Total vs Bias Score Total\nrho={corr:.2f}, p={p:.4f} {significance_stars(p)}')
+        plt.xlabel('Bias Score Total')
+        plt.ylabel('SURG-TLX Total')
+        plt.show()
+        
+# --- 8. CONFIDENCE VS BIAS PRESENCE (Logistic Regression) ---
+conf_col = 'how_confident_did_you_feel_in_your_decision-making_process?'
+
+if conf_col in df and 'bias_present' in df:
+    temp = df.dropna(subset=[conf_col, 'bias_present'])
+    if len(temp['bias_present'].unique()) == 2:
+        m = smf.logit(f'bias_present ~ Q("{conf_col}")', data=temp).fit(disp=0)
+        coef = m.params[f'Q("{conf_col}")']
+        p = m.pvalues[f'Q("{conf_col}")']
+        print(f"\nConfidence logistic regression: coef={coef:.2f}, p={p:.4f} {significance_stars(p)}")
+        
+        if p < 0.05:
+            temp.boxplot(column=conf_col, by='bias_present')
+            plt.title(f'Confidence by Bias Presence\np={p:.4f} {significance_stars(p)}')
+            plt.suptitle('')
+            plt.xlabel('Bias Present (0=No,1=Yes)')
+            plt.ylabel('Confidence Rating')
+            plt.show()
+
+
+from scipy.stats import pointbiserialr
+
+# Assuming your DataFrame is df and columns exist
+if 'bias_score_total' in df and 'bias_present' in df:
+    temp = df.dropna(subset=['bias_score_total', 'bias_present'])
+    r, p = pointbiserialr(temp['bias_present'], temp['bias_score_total'])
+    print(f"Point-biserial: bias_present vs bias_score_total: r={r:.2f} p={p:.4f} {significance_stars(p)}")
+
+if 'surg_total' in df and 'bias_present' in df:
+    temp = df.dropna(subset=['surg_total', 'bias_present'])
+    r, p = pointbiserialr(temp['bias_present'], temp['surg_total'])
+    print(f"Point-biserial: bias_present vs surg_total: r={r:.2f} p={p:.4f} {significance_stars(p)}")
