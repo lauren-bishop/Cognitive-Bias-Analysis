@@ -4,8 +4,27 @@ import scipy.stats as stats
 import statsmodels.formula.api as smf
 import matplotlib.pyplot as plt
 
+# --- CONFERENCE-READY PLOTTING STYLE ---
+plt.style.use('seaborn-v0_8-whitegrid')
+
+# Accessible colour palette (no red or green)
+ACC_COLORS = ['#0072B2', '#E69F00', '#56B4E9', '#CC79A7', '#999999']
+
+def format_plot(ax, title='', xlabel='', ylabel='', legend_title=None):
+    """Apply consistent professional formatting."""
+    ax.set_title(title, fontsize=14, fontweight='bold', pad=15)
+    ax.set_xlabel(xlabel, fontsize=12, labelpad=10)
+    ax.set_ylabel(ylabel, fontsize=12, labelpad=10)
+    if legend_title:
+        ax.legend(title=legend_title, fontsize=10, title_fontsize=11, frameon=False)
+    elif ax.get_legend():
+        ax.get_legend().set_frame_on(False)
+    plt.xticks(fontsize=10)
+    plt.yticks(fontsize=10)
+    plt.tight_layout()
+
 # 1. LOAD DATA
-file_path = r"C:\Users\Lauren\OneDrive - University College London\Cognitive Bias in Surgery#\Results\Data_with_years.csv"
+file_path = r"C:\Users\Lauren\OneDrive - University College London\Data_with_years.csv"
 df = pd.read_csv(file_path)
 df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
 
@@ -14,6 +33,7 @@ def significance_stars(p): return '***' if p < 0.001 else '**' if p < 0.01 else 
 # Key columns
 bias_cols = [c for c in df if c.startswith('bias_score_') and c != 'bias_score_total']
 surg_cols = [c for c in df if c.startswith('surg_') and c != 'surg_total']
+
 
 # --- 1. DESCRIPTIVE STATS ---
 print("\n=== PARTICIPANT DETAILS ===")
@@ -30,6 +50,7 @@ extra_cols = [
     'how_realistic_is_the_simulation?',
     'how_stressed_did_you_feel_during_the_procedure?',
     'how_confident_did_you_feel_in_your_decision-making_process?'
+    'What is your year of training or how many years since you have qualified as a consultant?'
 ]
 for col in extra_cols:
     if col in df:
@@ -45,38 +66,115 @@ for col in extra_cols:
         
 # --- 2. EXPERIENCE VS BIAS PRESENCE ---
 if 'what_is_your_year_of_training_or_how_many_years_since_you_have_qualified_as_a_consultant?' in df:
-    # Parse experience as integer
-    def parse_exp(v):
-        if pd.isnull(v): return np.nan
-        v = str(v).upper()
-        if v.isdigit(): return int(v)
-        if 'ST' in v and v[2:].isdigit(): return int(v[2:])
-        if v == 'SHO': return 3
-        return np.nan
-    df['experience_years'] = df['what_is_your_year_of_training_or_how_many_years_since_you_have_qualified_as_a_consultant?'].apply(parse_exp)
+
+    # Assume the column is already numeric (or can be safely converted)
+    df['experience_years'] = pd.to_numeric(
+        df['what_is_your_year_of_training_or_how_many_years_since_you_have_qualified_as_a_consultant?'],
+        errors='coerce'
+    )
+
+    # Drop missing data for regression
     temp = df.dropna(subset=['experience_years', 'bias_present'])
+
+    # Logistic regression (continuous)
     if len(temp['bias_present'].unique()) == 2:
         m = smf.logit('bias_present ~ experience_years', data=temp).fit(disp=0)
         p = m.pvalues['experience_years']
         print(f"\nExperience (continuous) logistic regression p={p:.4f} {significance_stars(p)}")
+
+        # If significant, show boxplot
         if p < 0.05:
             temp.boxplot(column='experience_years', by='bias_present')
-            plt.title('Experience by Bias Presence\np={:.4f} {}'.format(p,significance_stars(p)))
+            plt.title(f'Experience by Bias Presence\np={p:.4f} {significance_stars(p)}')
             plt.suptitle('')
-            plt.xlabel('Bias Present (0=No,1=Yes)')
+            plt.xlabel('Bias Present (0=No, 1=Yes)')
             plt.ylabel('Experience Years')
             plt.show()
-        # Categorical chi2
-        temp['experience_cat'] = pd.cut(temp['experience_years'], [0,3,6,10,50], labels=['junior','mid','senior','consultant'])
+
+        # Categorical analysis (chi-square)
+        temp['experience_cat'] = pd.cut(
+            temp['experience_years'],
+            bins=[0, 3, 6, 10],
+            labels=['junior', 'mid', 'senior'],
+            include_lowest=True
+        )
+
         tab = pd.crosstab(temp['bias_present'], temp['experience_cat'])
         chi2, p2, *_ = stats.chi2_contingency(tab)
         print(f"Experience (categorical) chi2 p={p2:.4f} {significance_stars(p2)}")
+
         if p2 < 0.05:
-            tab.plot(kind='bar')
-            plt.title(f'Bias Presence by Experience Category\np={p2:.4f} {significance_stars(p2)}')
-            plt.xlabel('Bias Present (0=No,1=Yes)')
-            plt.ylabel('Count')
+            ax = tab.plot(
+                kind='bar',
+                color=[ACC_COLORS[0], ACC_COLORS[1], ACC_COLORS[2]],
+                edgecolor='black'
+            )
+            format_plot(
+                ax,
+                title='Bias Presence by Experience Category',
+                xlabel='Bias Presence (0 = No, 1 = Yes)',
+                ylabel='Number of Participants',
+                legend_title='Experience Level'
+            )
+            ax.set_xticklabels(['No Bias', 'Bias Present'])
             plt.show()
+
+            
+# --- 2. EXPERIENCE VS BIAS PRESENCE (always show graphs) ---
+if 'what_is_your_year_of_training_or_how_many_years_since_you_have_qualified_as_a_consultant?' in df:
+
+    # Convert experience to numeric
+    df['experience_years'] = pd.to_numeric(
+        df['what_is_your_year_of_training_or_how_many_years_since_you_have_qualified_as_a_consultant?'],
+        errors='coerce'
+    )
+
+    # Clean subset
+    temp = df.dropna(subset=['experience_years', 'bias_present']).copy()
+
+    # --- Continuous analysis ---
+    if len(temp['bias_present'].unique()) == 2:
+        m = smf.logit('bias_present ~ experience_years', data=temp).fit(disp=0)
+        p = m.pvalues['experience_years']
+        print(f"\nExperience (continuous) logistic regression p={p:.4f} {significance_stars(p)}")
+
+        # Show boxplot regardless of significance
+        temp.boxplot(column='experience_years', by='bias_present')
+        plt.title(f'Experience by Bias Presence\np={p:.4f} {significance_stars(p)}')
+        plt.suptitle('')
+        plt.xlabel('Bias Present (0=No, 1=Yes)')
+        plt.ylabel('Experience Years')
+        plt.show()
+
+        # --- Categorical analysis ---
+        temp['experience_cat'] = pd.cut(
+            temp['experience_years'],
+            bins=[0, 3, 6, 10],
+            labels=['junior', 'mid', 'senior'],
+            include_lowest=True
+        )
+
+        tab = pd.crosstab(temp['bias_present'], temp['experience_cat'])
+        chi2, p2, *_ = stats.chi2_contingency(tab)
+        print(f"Experience (categorical) chi2 p={p2:.4f} {significance_stars(p2)}")
+
+        # Always show bar chart
+        ax = tab.plot(
+                kind='bar',
+                color=[ACC_COLORS[0], ACC_COLORS[1], ACC_COLORS[2]],
+                edgecolor='black'
+            )
+        format_plot(
+                ax,
+                title='Bias Presence by Experience Category',
+                xlabel='Bias Presence (0 = No, 1 = Yes)',
+                ylabel='Number of Participants',
+                legend_title='Experience Level'
+            )
+        ax.set_xticklabels(['No Bias', 'Bias Present'])
+        plt.show()
+
+
 
 # --- 3. NUMBER OF SURGERIES VS BIAS PRESENCE ---
 if 'approximately_how_many_times_have_you_completed_this_procedure_before?' in df:
@@ -96,31 +194,63 @@ if 'approximately_how_many_times_have_you_completed_this_procedure_before?' in d
             plt.ylabel('Number of Surgeries')
             plt.show()
 
-# --- 4. BIAS SCORE ITEMS VS BIAS PRESENCE ---
+# --- 4. BIAS SCORE ITEMS VS BIAS PRESENCE (Improved X-axis labels) ---
 print("\n=== INDIVIDUAL BIAS SCORE ITEMS vs BIAS PRESENCE ===")
+
+# Map internal column names to readable x-axis labels
+LABEL_MAP = {
+    'bias_score_mri_handover': ['Did not look at MRI handover', 'Looked at MRI handover'],
+    'bias_score_imaging_drilling': ['Did not check imaging drilling', 'Checked imaging drilling'],
+    # Add more here as needed
+}
+
 for col in bias_cols:
     tab = pd.crosstab(df['bias_present'], df[col])
-    
-    # Only proceed if table has both bias categories and two item categories
-    if tab.shape == (2,2) and tab.values.sum() > 0:
+
+    if tab.shape == (2, 2) and tab.values.sum() > 0:
         chi2, p, *_ = stats.chi2_contingency(tab)
         print(f"{col}: chi2={chi2:.2f}, p={p:.4f} {significance_stars(p)}")
-        if p < 0.05:
-            # Rename columns and rows for clarity
-            col_labels = [f'{col}: No', f'{col}: Yes']  # adjust if your data has 0/1
-            tab.columns = col_labels
-            tab.index = ['Bias Resistant', 'Bias Susceptible']
 
-            # Convert counts to percentages per column
+        if p < 0.05:
+            tab.index = ['Bias Resistant', 'Bias Susceptible']
             tab_pct = tab.div(tab.sum(axis=0), axis=1) * 100
 
-            # Plot
-            ax = tab_pct.T.plot(kind='bar', stacked=True, color=['#4CAF50','#F44336'])
-            plt.ylabel('Percentage (%)')
-            plt.xlabel(f'{col}')
-            plt.xticks(rotation=0)
-            plt.legend(title='Bias Status')
-            plt.title(f'Bias Resistance / Susceptibility: {col}\np={p:.4f} {significance_stars(p)}')
+            # Try to find label mapping
+            x_labels = LABEL_MAP.get(col, [f"{col}: 0", f"{col}: 1"])
+
+            fig, ax = plt.subplots(figsize=(6, 4))
+            tab_pct.T.plot(
+                kind='bar',
+                stacked=True,
+                color=[ACC_COLORS[0], ACC_COLORS[3]],
+                edgecolor='black',
+                ax=ax,
+                width=0.65
+            )
+
+            # Apply formatting
+            format_plot(
+                ax,
+                title=f'Bias Resistance vs Susceptibility for {col.replace("_", " ").title()}',
+                xlabel='',
+                ylabel='Percentage of Participants (%)',
+                legend_title='Bias Status'
+            )
+
+            # --- Key visual refinements ---
+            ax.set_xticklabels(x_labels, fontsize=9, rotation=10, ha='right')  # shorter readable labels
+            ax.tick_params(axis='y', labelsize=9)
+            ax.set_title(ax.get_title(), fontsize=11, fontweight='bold', pad=8)
+            ax.set_ylabel('Percentage of Participants (%)', fontsize=10)
+            ax.legend(
+                fontsize=8,
+                title_fontsize=9,
+                loc='upper center',
+                bbox_to_anchor=(0.5, -0.15),
+                ncol=2,
+                frameon=False
+            )  # moves legend below the plot
+
             plt.tight_layout()
             plt.show()
 
@@ -141,12 +271,35 @@ if 'bias_score_total' in df:
             plt.show()
 
 # --- 6. SURG-TLX ITEMS VS BIAS PRESENCE ---
+print("\n=== SURG-TLX ITEMS vs BIAS PRESENCE ===")
+
+# Create lists to store results
+surg_results = []
+
 for col in surg_cols:
     temp = df.dropna(subset=[col, 'bias_present'])
     if len(temp['bias_present'].unique()) == 2:
         m = smf.logit(f'bias_present ~ {col}', data=temp).fit(disp=0)
+        coef = m.params[col]
         p = m.pvalues[col]
-        print(f"{col}: coef={m.params[col]:.2f}, p={p:.4f} {significance_stars(p)}")
+        
+        # Calculate mean and SD for each group
+        mean_no_bias = temp[temp['bias_present'] == 0][col].mean()
+        sd_no_bias = temp[temp['bias_present'] == 0][col].std()
+        mean_bias = temp[temp['bias_present'] == 1][col].mean()
+        sd_bias = temp[temp['bias_present'] == 1][col].std()
+        
+        # Store results
+        surg_results.append({
+            'SURG-TLX Item': col.replace('surg_', '').replace('_', ' ').title(),
+            'No Bias Mean (SD)': f"{mean_no_bias:.2f} ({sd_no_bias:.2f})",
+            'Bias Present Mean (SD)': f"{mean_bias:.2f} ({sd_bias:.2f})",
+            'Coefficient': f"{coef:.2f}",
+            'p-value': f"{p:.4f}",
+            'Significance': significance_stars(p)
+        })
+        
+        print(f"{col}: coef={coef:.2f}, p={p:.4f} {significance_stars(p)}")
         if p < 0.05:
             temp.boxplot(column=col, by='bias_present')
             plt.title(f"{col} by Bias Presence\np={p:.4f} {significance_stars(p)}")
@@ -154,6 +307,14 @@ for col in surg_cols:
             plt.xlabel('Bias Present (0=No,1=Yes)')
             plt.ylabel(col)
             plt.show()
+
+# Create and display DataFrame
+surg_tlx_table = pd.DataFrame(surg_results)
+print("\n=== SURG-TLX SUMMARY TABLE ===")
+print(surg_tlx_table.to_string(index=False))
+
+# Optionally save to CSV
+surg_tlx_table.to_csv('surg_tlx_results.csv', index=False)
 
 # --- 7. SURG-TLX TOTAL VS BIAS SCORE TOTAL (Spearman) ---
 if 'surg_total' in df and 'bias_score_total' in df:
